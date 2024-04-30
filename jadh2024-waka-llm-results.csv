@@ -1,0 +1,51 @@
+model,run,result
+gpt-4,1,When I visit / my sleeves permeated with scent / of plum blossoms / shall I affirm here / the warbling of the bush warbler
+gpt-4,2,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / the warbling of the bush warbler
+gpt-4,3,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / the warbling of the bush warbler
+gpt-4,4,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / where the warbler sings
+gpt-4,5,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / where the warbler sings
+gpt-4,6,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / where the warbler sings
+gpt-4,7,When I visit / my sleeves permeated with scent / of plum blossoms / shall I affirm here / the warbling of the bush warbler
+gpt-4,8,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / where the warbler sings
+gpt-4,9,When I visit / surely my sleeves smell / of plum blossoms / do they not signify here / the warbling of the bush warbler
+gpt-4,10,When I visit / my sleeves permeated with scent / of plum blossoms / shall I affirm here / the warbling of the bush warbler
+gpt-4-turbo-preview,1,When I pass by / it's indeed my sleeves that carry the scent / of plum blossoms / is it here, where I am told / the bush warbler sings
+gpt-4-turbo-preview,2,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / Could it be here / that the bush warbler sings?
+gpt-4-turbo-preview,3,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / is it here, where I am told / the bush warbler sings?
+gpt-4-turbo-preview,4,When I alight here / my sleeves surely fragrance cling / of plum blossoms / is it here that / the bush warbler sings
+gpt-4-turbo-preview,5,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / Could it be here / that the bush warbler sings?
+gpt-4-turbo-preview,6,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / is it here, they claim / where the bush warbler sings
+gpt-4-turbo-preview,7,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / is it here, where I am told / the bush warbler sings?
+gpt-4-turbo-preview,8,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / is it here, where I am told / the bush warbler sings
+gpt-4-turbo-preview,9,When I pass by / it's indeed my sleeves that are fragrant / with the scent of plum blossoms / Is it here that they say / the bush warbler sings?
+gpt-4-turbo-preview,10,When I pass by / it's indeed my sleeves that carry the fragrance / of plum blossoms / is it here, where I am told / the bush warbler sings?
+gemini-1.5-pro-latest,1,As I fold my robe / The sleeves are perfumed / With the scent of plum blossoms / Could it be that here / A bush warbler is singing? 
+gemini-1.5-pro-latest,2,As I fold my robe / the sleeves are scented / with plum blossoms / is it because / a bush warbler sings here? 
+gemini-1.5-pro-latest,3,As I break a twig / my sleeve is perfumed / by the plum blossom / is it here it exists / that the bush warbler sings? 
+gemini-1.5-pro-latest,4,As I fold my robe / The sleeves are perfumed / By the plum blossoms / Is it because / The bush warbler sings here? 
+gemini-1.5-pro-latest,5,
+gemini-1.5-pro-latest,6,
+gemini-1.5-pro-latest,7,
+gemini-1.5-pro-latest,8,
+gemini-1.5-pro-latest,9,
+gemini-1.5-pro-latest,10,As I break off a branch / fragrance fills my sleeve / of the plum blossom / can it be that here / a bush warbler is singing? 
+claude-3-opus-20240229,1,If I break off a sprig / surely my sleeve will be fragrant / with the scent of plum blossoms / as if to say, "Here I am!" / a warbler sings.
+claude-3-opus-20240229,2,If I break off a sprig / surely my sleeve will be fragrant / with plum blossoms / as if to say, "I am here!" / a bush warbler sings.
+claude-3-opus-20240229,3,If I break off a sprig / surely my sleeves will be fragrant / with the plum blossoms / as if to say, "I am here" / the bush warbler sings
+claude-3-opus-20240229,4,If I break off a sprig / surely my sleeve will be fragrant / with the scent of plum blossoms / as if to say, "I am here!" / the warbler sings.
+claude-3-opus-20240229,5,If I break off a sprig / my sleeves will be scented / by the plum blossoms / as if to say, "I am here" / the bush warbler sings
+claude-3-opus-20240229,6,
+claude-3-opus-20240229,7,
+claude-3-opus-20240229,8,
+claude-3-opus-20240229,9,
+claude-3-opus-20240229,10,
+mistral/mistral-large-latest,1,Descending from the carriage / my sleeves are fragrant with / the scent of plum blossoms / indicating their presence here / where the bush warbler sings
+mistral/mistral-large-latest,2,Upon rising, / my sleeves carry the scent / of plum blossoms, / and here, the warbler sings / of their presence.
+mistral/mistral-large-latest,3,Upon rising, / my sleeves carry the scent / of plum blossoms, / suggesting they are here, / where the bush warbler sings.
+mistral/mistral-large-latest,4,Upon rising, / my sleeves carry the scent / of plum blossoms, / and here, the warbler sings, / as if they were in bloom.
+mistral/mistral-large-latest,5,Upon rising, / my sleeves bear the scent / of plum blossoms, / and here, the warbler sings / as if they were in bloom.
+mistral/mistral-large-latest,6,Upon standing, / my sleeves carry the scent / of plum blossoms, / and here, the warbler sings / of their presence.
+mistral/mistral-large-latest,7,Upon rising, / my sleeves bear the scent / of plum blossoms, / and here, the warbler sings / of their presence.
+mistral/mistral-large-latest,8,Upon standing, / my sleeves carry the scent / of plum blossoms, / and here, the warbler sings / as if they were still in bloom.
+mistral/mistral-large-latest,9,Upon descending, / my sleeves carry the scent / of plum blossoms, / indicating their presence here / where the nightingale sings.
+mistral/mistral-large-latest,10,When I rise, / my sleeves are fragrant / with plum blossoms, / indicating they are here, / where the bush warbler sings.
