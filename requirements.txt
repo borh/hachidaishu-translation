@@ -1,0 +1,19 @@
+# Structured generation
+outlines
+
+# API clients
+litellm
+google-generativeai # gemini
+tiktoken
+
+# Local models
+llama-cpp-python
+# --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+transformers
+datasets
+accelerate
+# torch
+# --extra-index-url https://download.pytorch.org/whl/rocm6.0
+
+numpy
+nltk # BLEU and CHRF eval

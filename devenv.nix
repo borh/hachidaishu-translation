@@ -1,10 +1,24 @@
-{ pkgs, lib, config, inputs, ... }:
-
 {
+  pkgs,
+  lib,
+  config,
+  inputs,
+  ...
+}: let
+  cuda = false;
+  rocm = true;
+in {
   # https://devenv.sh/basics/
 
   # https://devenv.sh/packages/
-  packages = [ pkgs.git ];
+  packages = [
+    pkgs.git
+    pkgs.openblas
+    pkgs.cmake
+    pkgs.stdenv.cc.cc
+    pkgs.stdenv.cc.cc.lib
+    pkgs.zlib
+  ];
 
   # https://devenv.sh/scripts/
 
@@ -16,6 +30,17 @@
     export AZURE_API_VERSION="2024-02-15-preview"
     export GEMINI_API_KEY=$(cat /run/agenix/gemini-vertex-key)
     export MISTRAL_API_KEY=$(cat /run/agenix/mistral-key)
+
+    export CMAKE_ARGS="-DLLAMA_BLAS=ON;-DLLAMA_BLAS_VENDOR=OpenBLAS${
+      if cuda
+      then ";-DLLAMA_CUDA=on"
+      else
+        (
+          if rocm
+          then ";-DLLAMA_HIPBLAS=on"
+          else ""
+        )
+    }"
   '';
 
   # https://devenv.sh/tests/
@@ -31,14 +56,16 @@
   languages.python = {
     enable = true;
     uv.enable = true;
-    venv.enable = true;
-    venv.requirements = ''
-      litellm
-      google-generativeai # gemini
-
-      numpy
-      nltk # BLEU and CHRF eval
-    '';
+    venv = {
+      enable = true;
+      requirements =
+        (builtins.readFile ./requirements.txt)
+        + (
+          if rocm
+          then "--extra-index-url https://download.pytorch.org/whl/rocm6.0\ntorch"
+          else "torch\n"
+        );
+    };
   };
 
   # https://devenv.sh/pre-commit-hooks/
