@@ -17,10 +17,13 @@ in {
     pkgs.cmake
     pkgs.stdenv.cc.cc
     pkgs.stdenv.cc.cc.lib
+    pkgs.gcc
+    pkgs.binutils
     pkgs.zlib
   ];
 
   # https://devenv.sh/scripts/
+  env.LD_LIBRARY_PATH = ".devenv/profile/lib";
 
   enterShell = ''
     export OPENAI_API_KEY=$(cat /run/agenix/openai-api)
@@ -30,8 +33,19 @@ in {
     export AZURE_API_VERSION="2024-02-15-preview"
     export GEMINI_API_KEY=$(cat /run/agenix/gemini-vertex-key)
     export MISTRAL_API_KEY=$(cat /run/agenix/mistral-key)
+    export HF_TOKEN=$(cat /run/agenix/hf-token)
 
-    export CMAKE_ARGS="-DLLAMA_BLAS=ON;-DLLAMA_BLAS_VENDOR=OpenBLAS${
+    export OPENAI_API_VERSION="2024-02-15-preview"
+    export MAGENTIC_OPENAI_API_KEY=$(cat /run/agenix/azure-openai-key)
+    export MAGENTIC_OPENAI_API_TYPE=azure
+    export MAGENTIC_OPENAI_BASE_URL=$(cat /run/agenix/azure-openai-base)
+    export MAGENTIC_OPENAI_SEED=42
+    export MAGENTIC_OPENAI_TEMPERATURE=0.0
+
+    # TODO fix llama-cpp-python build
+    export CMAKE_ARGS="-DLLAMA_BUILD=OFF"
+    export LLAMA_CPP_LIB=$(readlink -f ~/.local/state/home-manager/gcroots/current-home/home-path/lib/libllama.so)
+    # export CMAKE_ARGS="-DLLAMA_BLAS=ON;-DLLAMA_BLAS_VENDOR=OpenBLAS${
       if cuda
       then ";-DLLAMA_CUDA=on"
       else
@@ -41,6 +55,11 @@ in {
           else ""
         )
     }"
+    ${
+      if rocm
+      then "uv pip install torch --index-url https://download.pytorch.org/whl/rocm6.0"
+      else ""
+    }
   '';
 
   # https://devenv.sh/tests/

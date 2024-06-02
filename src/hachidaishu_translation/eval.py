@@ -1,7 +1,17 @@
 #!/usr/bin/env python
 
+# FIXME adapt to new code
+# Experiment:
+# - how many samples to translate to be able to evaluate models?
+# - add RIBES?
+
+# Contamination check:
+# - check using kokindb.txt
+# - check prevalance of translations online (how? search API?)
+# - how many samples to check?
+
 from nltk.translate.bleu_score import corpus_bleu
-from nltk.translate.chrf_score import corpus_chrf, sentence_chrf
+from nltk.translate.chrf_score import sentence_chrf
 from collections import defaultdict
 import numpy as np
 import re
@@ -13,9 +23,7 @@ csv_file = "jadh2024-waka-llm-results.csv"
 
 # Gold standard translations
 gold_translations = [
-    "plucking an armful / of flowers clinging fragrance / perfumed trailing sleeves– / a thrush warbles seeking plum / blossoms promised by the scent",
-    "My sleeves are fragrant / just because I plucked a splay. / Does the warbler think, / “I have found a plum in bloom,” / that he comes here with his song?",
-    "Since I broke it, / my sleeves are fragrant with / plum blossoms. / Is it here that / the warbler sings?",
+    # TODO get from gen
 ]
 
 
@@ -76,7 +84,7 @@ if __name__ == "__main__":
             model_results_words,
         )
         # corpus_chrf([ref1, ref2, ref1, ref2], [hyp1, hyp2, hyp2, hyp1])
-        # As the above does not compute macro-average CHRF score accross all references, we compute it manually
+        # As the above does not compute macro-average CHRF score across all references, we compute it manually
         chrf_scores = []
         for hyp in model_results_chars:
             chrf_scores.append(
