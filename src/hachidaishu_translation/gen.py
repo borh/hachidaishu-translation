@@ -51,7 +51,7 @@ def get_hf_model(model_name="mistralai/Mistral-7B-Instruct-v0.3"):
             # Needs CUDA:
             # "load_in_8bit": True,
             # "load_in_4bit": True,
-            # "attn_implementation": "flash_attention_2",
+            "attn_implementation": "flash_attention_2",
             "device_map": {"": 0},
         },
     )
@@ -192,9 +192,6 @@ def translate_pydantic(
         return answer.translated
 
 
-
-
-
 def run(poem_text):
     """Models are chosen based on the following criteria:
     - Score on the [Nejumi LLM Leaderboard](https://wandb.ai/wandb-japan/llm-leaderboard/reports/Nejumi-leaderboard-Neo--Vmlldzo2MTkyMTU0)
@@ -203,7 +200,7 @@ def run(poem_text):
     results = []
     for model_name in [
         # "CohereForAI/aya-23-8B", # Generates gibberish
-        # "augmxnt/shisa-gamma-7b-v1",
+        "augmxnt/shisa-gamma-7b-v1",
         # "Qwen/Qwen1.5-7B-Chat",
         # "TheBloke/Swallow-7B-Instruct-AWQ",
         # "tokyotech-llm/Swallow-MS-7b-instruct-v0.1",
@@ -261,8 +258,11 @@ def model_judge(translations: list[str], judge_model="gpt_4_0613"):
         #     judged_translations.append(judged)
         # return judged_translations
 
+
 from itertools import groupby
 import re
+from pprint import pprint
+
 
 def waka_to_translations(filename="kokindb.txt") -> dict[str, str]:
     with open(filename, "r", encoding="euc-jp") as f:
@@ -277,21 +277,28 @@ def waka_to_translations(filename="kokindb.txt") -> dict[str, str]:
             meta, text = line.split("|")
             code = meta[-1]
             if code == "I":
-                original = re.sub(r"〈[^〉]+〉", "", text.strip("＠／ \n").replace("／", ""))
+                original = re.sub(
+                    r"〈[^〉]+〉", "", text.strip("＠／ \n").replace("／", "")
+                )
             elif code == "N":
                 translation = text.strip("＠/ \n").replace("  ", " ")
-        
+
         if original and translation:
             mapping[original] = translation
         else:
-            raise Exception(f"Missing original or translation for {original} in {lines}.")
+            raise Exception(
+                f"Missing original or translation for {original} in {lines}."
+            )
     return mapping
 
 
 import random
+
+
 def random_sample(lines, n=5, random_seed=42):
     random.seed(random_seed)
     return random.sample(lines, n)
+
 
 if __name__ == "__main__":
     translation_map = waka_to_translations()
@@ -302,8 +309,14 @@ if __name__ == "__main__":
     )
     # eagerly load all poems
     poems = [list(poem) for _, poem in by_poem]
-    poem_sample = random_sample([poem for poem in poems if format_poem([r.token() for r in poem], delim="")
-                                 in translation_map], n=5)
+    poem_sample = random_sample(
+        [
+            poem
+            for poem in poems
+            if format_poem([r.token() for r in poem], delim="") in translation_map
+        ],
+        n=5,
+    )
     # found = 0
     # for _poem_info, poem in by_poem:
     #     original = re.sub(r"[〈〉]", "", format_poem([r.token() for r in poem], delim="", split=False))
@@ -317,17 +330,26 @@ if __name__ == "__main__":
     for poem in poem_sample:
         # tokens = list(db.tokens(anthology=Anthology.Kokinshu, poem=32))
         tokens = [r.token() for r in poem]
-        print(format_poem(tokens, delim=" "))
-        print(format_poem(tokens, delim=""))
-        print(format_poem(tokens, delim=" ", split=True))
-        print(format_poem(tokens, delim="", split=False))
-        print(format_poem(tokens, delim=" ", romaji=True))
-        print(format_poem(tokens, delim="", romaji=True))
-        print(format_poem(tokens, delim=" ", split=True, romaji=True))
-        print(format_poem(tokens, delim="", split=False, romaji=True))
-        print(translation_map[format_poem(tokens, delim="")])
-        print(pp(translation_map[format_poem(tokens, delim="")], lang="en"))
-    
+        original_tokens = format_poem(tokens, delim=" ", split=True)
+        gold_translation = translation_map[format_poem(tokens, delim="")]
+
+        translations = run(original_tokens)
+        print(f"O\t{original_tokens}")
+        print(f"GT\t{gold_translation}")
+        pprint(translations)
+
+        # # print(format_poem(tokens, delim=" "))
+        # # print(format_poem(tokens, delim=""))
+        # print(format_poem(tokens, delim=" ", split=True))
+        # # print(format_poem(tokens, delim="", split=False))
+        # # print(format_poem(tokens, delim=" ", romaji=True))
+        # # print(format_poem(tokens, delim="", romaji=True))
+        # # print(format_poem(tokens, delim=" ", split=True, romaji=True))
+        # # print(format_poem(tokens, delim="", split=False, romaji=True))
+        # print(translation_map[format_poem(tokens, delim="")])
+        # # print(pp(translation_map[format_poem(tokens, delim="")], lang="en"))
+        print()
+
     # print(db.text(delimiter="", embed_metadata=True))
     # judged_translations = model_judge(translations)
     # for translation in judged_translations:

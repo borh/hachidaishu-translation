@@ -5,25 +5,35 @@
   inputs,
   ...
 }: let
-  cuda = false;
-  rocm = true;
+  cuda = true;
+  rocm = false;
 in {
   # https://devenv.sh/basics/
 
   # https://devenv.sh/packages/
-  packages = [
-    pkgs.git
-    pkgs.openblas
-    pkgs.cmake
-    pkgs.stdenv.cc.cc
-    pkgs.stdenv.cc.cc.lib
-    pkgs.gcc
-    pkgs.binutils
-    pkgs.zlib
-  ];
+  packages =
+    [
+      pkgs.git
+      pkgs.openblas
+      pkgs.cmake
+      pkgs.ninja
+      pkgs.zlib
+      pkgs.stdenv.cc.cc
+      pkgs.stdenv.cc.cc.lib
+      pkgs.gcc
+      pkgs.binutils
+    ]
+    ++ lib.optionals cuda [
+      pkgs.linuxPackages_latest.nvidia_x11
+    ];
 
   # https://devenv.sh/scripts/
-  env.LD_LIBRARY_PATH = ".devenv/profile/lib";
+  # env.LD_LIBRARY_PATH = ".devenv/profile/lib";
+  env.LD_LIBRARY_PATH = ".devenv/profile/lib:.devenv/profile/lib64${
+    if cuda
+    then ":${pkgs.cudatoolkit}/lib:${pkgs.cudatoolkit}/lib64:${pkgs.cudatoolkit}/host-linux-x64/Mesa"
+    else ""
+  }";
 
   enterShell = ''
     export OPENAI_API_KEY=$(cat /run/agenix/openai-api)
@@ -58,6 +68,11 @@ in {
     ${
       if rocm
       then "uv pip install torch --index-url https://download.pytorch.org/whl/rocm6.0"
+      else "uv pip install torch"
+    }
+    ${
+      if cuda
+      then "export CUDA_HOME=${pkgs.cudatoolkit}"
       else ""
     }
   '';
@@ -83,6 +98,11 @@ in {
           if rocm
           then "--extra-index-url https://download.pytorch.org/whl/rocm6.0\ntorch"
           else "torch\n"
+        )
+        + (
+          if cuda
+          then "packaging\nsetuptools\nwheel\ntorch\nbitsandbytes\n"
+          else ""
         );
     };
   };
