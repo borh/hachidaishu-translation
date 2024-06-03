@@ -61,8 +61,11 @@ def get_hf_model(model_name="mistralai/Mistral-7B-Instruct-v0.3"):
 # Nobs to tweak in instructions:
 # - translate by chunks
 # - translate by words
-# - translate whole line
+# - translate whole line (preferred)
+# TODO
+# - n:m or 1:1 word alignment for translations
 # - literal translation vs. poetic translation
+#   - focus on glossing (~literal translation w/o extra (unneeded) context)
 
 
 @outlines.prompt
@@ -95,11 +98,12 @@ word_regex = r"([^:]+: [\w\s]+\n)+"
 class LinesSchema(BaseModel):
     original: str = Field(description="Original poem.")
     transliterated: str | None = Field(description="Transliterated poem.")
+    pos_marked: str | None = Field(description="PoS-marked poem.")
     translated: str = Field(description="Translated poem.")
 
 
 @magentic.prompt("Create a translation for {original}.")
-def create_lines_translation(original: str) -> LinesSchema: ...
+def create_lines_translation(original: str, transliterated: str) -> LinesSchema: ...
 
 
 class ChunksSchema(BaseModel):
@@ -200,7 +204,7 @@ def run(poem_text):
     results = []
     for model_name in [
         # "CohereForAI/aya-23-8B", # Generates gibberish
-        "augmxnt/shisa-gamma-7b-v1",
+        # "augmxnt/shisa-gamma-7b-v1",
         # "Qwen/Qwen1.5-7B-Chat",
         # "TheBloke/Swallow-7B-Instruct-AWQ",
         # "tokyotech-llm/Swallow-MS-7b-instruct-v0.1",
