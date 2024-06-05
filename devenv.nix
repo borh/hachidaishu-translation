@@ -40,6 +40,7 @@ in {
     export ANTHROPIC_API_KEY=$(cat /run/agenix/anthropic-key)
     export AZURE_API_KEY=$(cat /run/agenix/azure-openai-key)
     export AZURE_API_BASE=$(cat /run/agenix/azure-openai-base)
+    export AZURE_DEPLOYMENT_NAME=$(cat /run/agenix/azure-deployment-name)
     export AZURE_API_VERSION="2024-02-15-preview"
     export GEMINI_API_KEY=$(cat /run/agenix/gemini-vertex-key)
     export MISTRAL_API_KEY=$(cat /run/agenix/mistral-key)
