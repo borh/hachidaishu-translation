@@ -5,8 +5,8 @@
   inputs,
   ...
 }: let
-  cuda = true;
-  rocm = false;
+  cuda = false;
+  rocm = true;
 in {
   # https://devenv.sh/basics/
 
@@ -22,6 +22,8 @@ in {
       pkgs.stdenv.cc.cc.lib
       pkgs.gcc
       pkgs.binutils
+
+      pkgs.duckdb
     ]
     ++ lib.optionals cuda [
       pkgs.linuxPackages_latest.nvidia_x11
@@ -38,20 +40,22 @@ in {
   enterShell = ''
     export OPENAI_API_KEY=$(cat /run/agenix/openai-api)
     export ANTHROPIC_API_KEY=$(cat /run/agenix/anthropic-key)
-    export AZURE_API_KEY=$(cat /run/agenix/azure-openai-key)
-    export AZURE_API_BASE=$(cat /run/agenix/azure-openai-base)
-    export AZURE_DEPLOYMENT_NAME=$(cat /run/agenix/azure-deployment-name)
+    export AZURE_API_KEY=$(cat /run/agenix/azure-us-west3-openai-key)
+    export AZURE_API_BASE=$(cat /run/agenix/azure-us-west3-openai-base)
+    export AZURE_DEPLOYMENT_NAME=$(cat /run/agenix/azure-us-west3-deployment-name)
     export AZURE_API_VERSION="2024-02-15-preview"
     export GEMINI_API_KEY=$(cat /run/agenix/gemini-vertex-key)
     export MISTRAL_API_KEY=$(cat /run/agenix/mistral-key)
     export HF_TOKEN=$(cat /run/agenix/hf-token)
 
     export OPENAI_API_VERSION="2024-02-15-preview"
-    export MAGENTIC_OPENAI_API_KEY=$(cat /run/agenix/azure-openai-key)
+    export MAGENTIC_OPENAI_API_KEY=$(cat /run/agenix/azure-us-west3-openai-key)
     export MAGENTIC_OPENAI_API_TYPE=azure
-    export MAGENTIC_OPENAI_BASE_URL=$(cat /run/agenix/azure-openai-base)
-    export MAGENTIC_OPENAI_SEED=42
+    # NOTE: baseurl needs openai added
+    export MAGENTIC_OPENAI_BASE_URL=$(cat /run/agenix/azure-us-west3-openai-base)openai
+    export MAGENTIC_OPENAI_SEED=420
     export MAGENTIC_OPENAI_TEMPERATURE=0.0
+    export MAGENTIC_OPENAI_MODEL=4o-global
 
     # TODO fix llama-cpp-python build
     export CMAKE_ARGS="-DLLAMA_BUILD=OFF"

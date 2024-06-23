@@ -1,4 +1,5 @@
 -e .
+setuptools
 # -e ../hachidaishu
 # Structured generation
 outlines # for regex and structured generation
@@ -23,5 +24,9 @@ accelerate
 jaconv
 
 tqdm
+duckdb
 numpy
 nltk # BLEU and CHRF eval
+rouge-metric
+# Debug
+prettytable
