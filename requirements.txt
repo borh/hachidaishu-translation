@@ -24,9 +24,13 @@ accelerate
 jaconv
 
 tqdm
+loguru
 duckdb
 numpy
 nltk # BLEU and CHRF eval
 rouge-metric
+matplotlib
+seaborn
+word-alignment-visualization
 # Debug
 prettytable

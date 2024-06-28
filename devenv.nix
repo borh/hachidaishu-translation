@@ -24,6 +24,9 @@ in {
       pkgs.binutils
 
       pkgs.duckdb
+
+      pkgs.libxml2
+      pkgs.nodejs
     ]
     ++ lib.optionals cuda [
       pkgs.linuxPackages_latest.nvidia_x11
@@ -80,6 +83,8 @@ in {
       then "export CUDA_HOME=${pkgs.cudatoolkit}"
       else ""
     }
+
+    python -m nltk.downloader wordnet
   '';
 
   # https://devenv.sh/tests/
@@ -111,6 +116,8 @@ in {
         );
     };
   };
+
+  languages.javascript.enable = true;
 
   # https://devenv.sh/pre-commit-hooks/
   # pre-commit.hooks.shellcheck.enable = true;

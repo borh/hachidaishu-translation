@@ -1,11 +1,10 @@
-from os import makedev
 import outlines
 from outlines import generate
 
 # from outlines.models.openai import OpenAIConfig
 import magentic
 from pydantic import BaseModel, Field
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Annotated, TypeVar
 import transformers
 import torch
 from itertools import groupby
@@ -15,11 +14,13 @@ import re
 from hachidaishu_translation.hachidaishu import HachidaishuDB
 from hachidaishu_translation.format import (
     format_poem,
+    remove_unique,
     visualize_alignment,
     make_unique,
-    remove_delimiters,
+    normalize_tokens,
 )
 import hachidaishu_translation.db as db
+from hachidaishu_translation.utils import retry
 from hachidaishu_translation.log import logger
 
 import gc
@@ -43,6 +44,7 @@ def get_hf_model(model_name: str):
         else False
     )
     if bab_support:
+        # This is gated to avoid loading on non-CUDA devices
         from bitsandbytes import BitsAndBytesConfig
 
         quantization_config = BitsAndBytesConfig(load_in_8bit=True)
@@ -99,51 +101,19 @@ class LinesSchema(BaseModel):
     translated: str = Field(description="Translated poem.")
 
 
-@magentic.prompt("Create a translation for {original}.")
+@magentic.prompt(
+    "Translate this waka poem into English. Use at least 15 words:\n{original}"
+)
 def create_lines_translation(
-    original: str, transliterated: str | None = None
+    original: str,
+    transliterated: str | None = None,
+    pos_marked: str | None = None,
 ) -> LinesSchema: ...
 
 
-class ChunksSchema(BaseModel):
-    original: list[str] = Field(description="List of original chunks.")
-    transliterated: Optional[list[str]] = Field(
-        description="List of transliterated chunks.", default=None
-    )
-    translated: list[str] = Field(
-        description="List of translations of each original chunk in same order as original."
-    )
-
-
-@magentic.prompt("Create a translation for {original}.")
-def create_chunks_translation(original: list[str]) -> ChunksSchema: ...
-
-
-@magentic.prompt(
-    "Create a translation for {original} transliterated as {transliterated}."
-)
-def create_chunks_transliterated_translation(
-    original: list[str], transliterated: list[str] | None = None
-) -> ChunksSchema: ...
-
-
-class TokensSchema(BaseModel):
-    original: list[str] = Field(description="List of original tokens.")
-    transliterated: Optional[list[str]] = Field(
-        description="List of transliterated tokens.", default=None
-    )
-    translated: list[str] = Field(
-        description="List of translated tokens in same order as original."
-    )
-
-
-@magentic.prompt("Create translations for all tokens in {original}.")
-def create_tokens_translation(original: str) -> TokensSchema: ...
-
-
-class Alignment(BaseModel):
-    original_index: int = Field(description="Index of original token")
-    translated_index: int = Field(description="Index of translated token")
+# # Bitext word alignment task
+# We are concerned with the alignment of tokens from the original to the translated text.
+# As such, we want to capture 1:1 or 1:n alignments, and not be concerned with n:m alignments.
 
 
 class TokenAlignment(BaseModel):
@@ -151,36 +121,25 @@ class TokenAlignment(BaseModel):
     translated_token: str = Field(description="Translated token string")
 
 
-# # Bitext word alignment task
-# We are concerned with the alignment of tokens from the original to the translated text.
-# As such, we want to capture 1:1 or 1:n alignments, and not be concerned with n:m alignments.
-class AlignmentSchema(BaseModel):
-    # original: list[str] = Field(description="List of original tokens.")
-    # translated: list[str] = Field(description="List of translated tokens.")
-    alignment: list[Alignment] = Field(
-        description="List of 0-based (original_index, translated_index) alignment tuples from indices of tokens in original and translated. Multiple original indices can align to the same translated index. A token can be unaligned."
-    )
-
-
 class TokenAlignmentSchema(BaseModel):
     alignment: list[TokenAlignment] = Field(
-        description="List of (original_token, translated_token) alignment tuples from tokens in original to translated. Tokens are space-delimited strings and should not be further split. Multiple original indices can align to the same translated index and vice versa. A token can be unaligned in which case do not return its alignment. A token repeated multiple times will have a suffix appended to it so you must use it indicate the correct alignment."
+        description="List of (original_token, translated_token) alignment tuples from tokens in original to translated. Tokens are space-delimited strings and should not be further split. A token can be aligned to multiple other tokens. A token can be unaligned, in the case of tokens with predominantly grammatical function, in which case do not align it. For disambiguation purposes, a token repeated multiple times will have a suffix appended to it so you must use it indicate the correct alignment."
     )
 
 
-from typing import Annotated, TypeVar
-
+# Each token that is aligned should consist of only one string with no whitespace. In the case of multi-token phrases, align each token of the phrase to the same token separately.
 T = TypeVar("T")
 
 
 class IndexedTokens(list[T]):
     def __format__(self, format_spec: str) -> str:
-        actual_tokens = remove_delimiters(self)
-        return f"{' '.join(make_unique(actual_tokens))} ({len(actual_tokens)} tokens)"
+        # Here we ensure that the tokens passed in for alignment are normalized and unique
+        actual_tokens = make_unique(normalize_tokens(self))
+        return f"{' '.join(actual_tokens)} ({len(actual_tokens)} tokens)"
 
 
 @magentic.prompt(
-    "Align the tokens in the waka {original} to the tokens in the translation {translated}."
+    "Align the tokens in the original and translated waka:\n\n## Original\n{original}\n\n## Translation\n{translated}"
 )
 def align_tokens(
     original: Annotated[
@@ -206,24 +165,25 @@ translation_matrix = {
             "prompt": create_lines_translation,
         },
     },
-    "chunks": {
-        "regex": {
-            "prompt": translate_chunks,
-            "regex": delimiter_regex,
-        },
-        "pydantic": {
-            "prompt": create_chunks_translation,
-        },
-    },
-    "words": {
-        "regex": {
-            "prompt": translate_words,
-            "regex": word_regex,
-        },
-        "pydantic": {
-            "prompt": create_tokens_translation,
-        },
-    },
+    # After experimentation, whole-line-based translation works best.
+    # "chunks": {
+    #     "regex": {
+    #         "prompt": translate_chunks,
+    #         "regex": delimiter_regex,
+    #     },
+    #     "pydantic": {
+    #         "prompt": create_chunks_translation,
+    #     },
+    # },
+    # "words": {
+    #     "regex": {
+    #         "prompt": translate_words,
+    #         "regex": word_regex,
+    #     },
+    #     "pydantic": {
+    #         "prompt": create_tokens_translation,
+    #     },
+    # },
 }
 
 
@@ -249,6 +209,7 @@ def translate_pydantic(
     prompt_function,
 ):
     # with magentic.OpenaiChatModel(model, temperature=0, seed=42):
+    logger.debug(prompt_function.format(text))
     answer = prompt_function(text)
     logger.info(answer)
     return answer.translated
@@ -298,6 +259,9 @@ def run(tokens: list[str], original_token_ids: list[int], poem_id: int) -> list[
             else:
                 raise ValueError(f"Invalid model type {model_type}.")
 
+            # Result normalization:
+            translation = translation.strip(".").replace("\n", " ")
+
             result = {
                 "model": model_name,
                 "method": model_type,
@@ -305,14 +269,13 @@ def run(tokens: list[str], original_token_ids: list[int], poem_id: int) -> list[
                 "translation": translation,
             }
             results.append(result)
-            # Save translation to DuckDB
+
             translation_id = db.save_translation(
                 poem_id, model_name, model_type, gen_type, translation
             )
             result["translation_id"] = translation_id
 
-            # Save tokens for the translation
-            translated_tokens = make_unique(
+            translated_tokens = normalize_tokens(
                 [
                     word
                     for item in (
@@ -327,16 +290,15 @@ def run(tokens: list[str], original_token_ids: list[int], poem_id: int) -> list[
             result["translated_tokens"] = translated_tokens
             result["translated_token_ids"] = translated_token_ids
 
-            # Save alignment to DuckDB
-            alignment = align_tokens(
-                IndexedTokens(tokens), IndexedTokens(translated_tokens)
-            )
-            db.save_alignment(
-                translation_id,
-                alignment,
-                dict(zip(tokens, original_token_ids)),
-                dict(zip(translated_tokens, translated_token_ids)),
-            )
+            # alignment = align_tokens(
+            #     IndexedTokens(tokens), IndexedTokens(translated_tokens)
+            # )
+            # db.save_alignment(
+            #     translation_id,
+            #     alignment,
+            #     dict(zip(make_unique(tokens), original_token_ids)),
+            #     dict(zip(make_unique(translated_tokens), translated_token_ids)),
+            # )
         # Free up GPU memory
         del model
         gc.collect()
@@ -388,19 +350,19 @@ if __name__ == "__main__":
     )
     # eagerly load all poems
     poems = [list(poem) for _, poem in by_poem]
-    poem_sample = [
-        poem
-        for poem in poems
-        if format_poem([r.token() for r in poem], delim="") in translation_map
-    ]
-    # poem_sample = random_sample(
-    #     [
-    #         poem
-    #         for poem in poems
-    #         if format_poem([r.token() for r in poem], delim="") in translation_map
-    #     ],
-    #     n=5,
-    # )
+    # poem_sample = [
+    #     poem
+    #     for poem in poems
+    #     if format_poem([r.token() for r in poem], delim="") in translation_map
+    # ]
+    poem_sample = random_sample(
+        [
+            poem
+            for poem in poems
+            if format_poem([r.token() for r in poem], delim="") in translation_map
+        ],
+        n=10,
+    )
 
     for poem in poem_sample:
         # tokens = list(db.tokens(anthology=Anthology.Kokinshu, poem=32))
@@ -408,54 +370,43 @@ if __name__ == "__main__":
         original_tokens = format_poem(tokens, delim=" ", split=True)
         gold_translation = translation_map[format_poem(tokens, delim="")]
 
-        o_list = remove_delimiters(original_tokens.split())
-        gt_list = remove_delimiters(gold_translation.split())
+        o_list = normalize_tokens(original_tokens.split())
+        gt_list = normalize_tokens(gold_translation.split())
 
         o_list_unique = make_unique(o_list)
         gt_list_unique = make_unique(gt_list)
 
         logger.info(f"O\t\t{original_tokens}")
         logger.info(f"GT\t\t{gold_translation}")
+        logger.info(f"O\t\t{o_list_unique}")
+        logger.info(f"GT\t\t{gt_list_unique})")
 
         poem_id = db.save_poem(original_tokens)
-        original_token_ids = db.save_poem_tokens(poem_id, o_list_unique)
+        original_token_ids = db.save_poem_tokens(poem_id, remove_unique(o_list_unique))
 
         gold_translation_id = db.save_translation(
             poem_id, "gold_standard", "manual", "gold", gold_translation
         )
         gold_translation_token_ids = db.save_translation_tokens(
-            gold_translation_id, gt_list_unique
+            gold_translation_id, remove_unique(gt_list_unique)
         )
 
-        alignment = align_tokens(IndexedTokens(o_list), IndexedTokens(gt_list))
-
-        db.save_alignment(
-            gold_translation_id,
-            alignment,
-            dict(zip(o_list_unique, original_token_ids)),
-            dict(zip(gt_list_unique, gold_translation_token_ids)),
-        )
-
-        try:
-            logger.info(
-                "\n"
-                + visualize_alignment(
-                    o_list_unique,
-                    gt_list_unique,
-                    alignment,
-                ).get_string()
-            )
-        except Exception as e:
-            logger.error(f"Error visualizing alignment: {e}, retrying.")
+        def visualize_and_save_alignment():
             alignment = align_tokens(IndexedTokens(o_list), IndexedTokens(gt_list))
-            logger.info(
-                "\n"
-                + visualize_alignment(
-                    o_list_unique,
-                    gt_list_unique,
-                    alignment,
-                ).get_string()
+            alignment_visualization = visualize_alignment(
+                o_list_unique,
+                gt_list_unique,
+                alignment,
             )
+            logger.info("\n" + alignment_visualization.get_string())
+            db.save_alignment(
+                gold_translation_id,
+                alignment,
+                dict(zip(o_list_unique, original_token_ids)),
+                dict(zip(gt_list_unique, gold_translation_token_ids)),
+            )
+
+        retry(visualize_and_save_alignment)
 
         translations = run(o_list_unique, original_token_ids, poem_id)
         for translation in translations:
@@ -469,33 +420,15 @@ if __name__ == "__main__":
                 )
                 continue
 
-            alignment = align_tokens(
-                IndexedTokens(o_list), IndexedTokens(translation["translated_tokens"])
-            )
-            try:
-                alignment_visualization = visualize_alignment(
-                    o_list_unique, translation["translated_tokens"], alignment
-                )
-                logger.info("\n" + alignment_visualization.get_string())
-                db.save_alignment(
-                    translation["translation_id"],
-                    alignment,
-                    dict(zip(o_list_unique, original_token_ids)),
-                    dict(
-                        zip(
-                            translation["translated_tokens"],
-                            translation["translated_token_ids"],
-                        )
-                    ),
-                )
-            except Exception as e:
-                logger.error(f"Error visualizing alignment: {e}, retrying.")
+            def visualize_and_save_translation_alignment():
                 alignment = align_tokens(
                     IndexedTokens(o_list),
                     IndexedTokens(translation["translated_tokens"]),
                 )
                 alignment_visualization = visualize_alignment(
-                    o_list_unique, translation["translated_tokens"], alignment
+                    o_list_unique,
+                    make_unique(normalize_tokens(translation["translated_tokens"])),
+                    alignment,
                 )
                 logger.info("\n" + alignment_visualization.get_string())
                 db.save_alignment(
@@ -504,8 +437,10 @@ if __name__ == "__main__":
                     dict(zip(o_list_unique, original_token_ids)),
                     dict(
                         zip(
-                            translation["translated_tokens"],
+                            make_unique(translation["translated_tokens"]),
                             translation["translated_token_ids"],
                         )
                     ),
                 )
+
+            retry(visualize_and_save_translation_alignment)
