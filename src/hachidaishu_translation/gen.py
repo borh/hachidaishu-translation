@@ -199,10 +199,6 @@ def translate_regex(
     return answer
 
 
-# FIXME: This is a hack to avoid https://github.com/openai/openai-python/issues/1469
-magentic.OpenaiChatModel._get_stream_options = lambda _: None
-
-
 def translate_pydantic(
     _model,
     text: str,
