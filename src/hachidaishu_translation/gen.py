@@ -1,305 +1,36 @@
-import outlines
-from outlines import generate
-
-# from outlines.models.openai import OpenAIConfig
-import magentic
-from pydantic import BaseModel, Field
-from typing import Optional, Iterable, Annotated, TypeVar
-import transformers
-import torch
-from itertools import groupby
-import re
-
-
-from hachidaishu_translation.hachidaishu import HachidaishuDB
-from hachidaishu_translation.format import (
-    format_poem,
-    remove_unique,
-    visualize_alignment,
-    make_unique,
-    normalize_tokens,
-)
-import hachidaishu_translation.db as db
-from hachidaishu_translation.utils import retry
-from hachidaishu_translation.log import logger
-
-import gc
 import random
+import re
+import uuid
+from itertools import groupby, islice
+from typing import Any
+
+import outlines
+from torch import t
 from tqdm import tqdm
 
-
-def get_hf_model(model_name: str):
-    logger.info(f"Loading model {model_name}.")
-    config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    config.init_device = "meta"
-    kwargs = {
-        "config": config,
-        "trust_remote_code": True,
-        "torch_dtype": torch.bfloat16,
-        "device_map": {"": 0},
-    }
-    bab_support = (
-        True
-        if torch.cuda.is_available() == "cuda" and torch.version.hip is None
-        else False
-    )
-    if bab_support:
-        # This is gated to avoid loading on non-CUDA devices
-        from bitsandbytes import BitsAndBytesConfig
-
-        quantization_config = BitsAndBytesConfig(load_in_8bit=True)
-        kwargs["quantization_config"] = quantization_config
-        kwargs["load_in_4bit"] = True
-        kwargs["attn_implementation"] = "flash_attention_2"
-
-    model = outlines.models.transformers(
-        model_name=model_name,
-        device="cuda",
-        model_kwargs=kwargs,
-    )
-    return model
-
-
-# Nobs to tweak in instructions:
-# - translate by chunks
-# - translate by words
-# - translate whole line (preferred)
-# TODO
-# - n:m or 1:1 word alignment for translations
-# - literal translation vs. poetic translation
-#   - focus on glossing (~literal translation w/o extra (unneeded) context)
-
-
-@outlines.prompt
-def translate_chunks(waka):
-    """Translate the following waka poem into English. Output only the translation all in one line with / as delimiter between parts.
-
-    {{ waka }}
-    """
-
-
-@outlines.prompt
-def translate_words(waka):
-    """Translate the following waka poem into English, word-by-word. Output the translation in one or more words, one line per word separated with a colon.
-    {{ waka }}
-    """
-
-
-@outlines.prompt
-def translate_lines(waka):
-    """Translate the following waka poem into English. Output the translation as a single line.
-    {{ waka }}
-    """
-
-
-class LinesSchema(BaseModel):
-    original: str = Field(description="Original poem.")
-    transliterated: Optional[str] = Field(
-        description="Transliterated poem.", default=None
-    )
-    pos_marked: Optional[str] = Field(description="PoS-marked poem.", default=None)
-    translated: str = Field(description="Translated poem.")
-
-
-@magentic.prompt(
-    "Translate this waka poem into English. Use at least 15 words:\n{original}"
+import hachidaishu_translation.db as db
+from hachidaishu_translation.format import (
+    clean_bad_translation,
+    format_poem,
+    make_unique,
+    normalize_tokens,
+    remove_unique,
+    visualize_alignment,
 )
-def create_lines_translation(
-    original: str,
-    transliterated: str | None = None,
-    pos_marked: str | None = None,
-) -> LinesSchema: ...
-
-
-# # Bitext word alignment task
-# We are concerned with the alignment of tokens from the original to the translated text.
-# As such, we want to capture 1:1 or 1:n alignments, and not be concerned with n:m alignments.
-
-
-class TokenAlignment(BaseModel):
-    original_token: str = Field(description="Original token string")
-    translated_token: str = Field(description="Translated token string")
-
-
-class TokenAlignmentSchema(BaseModel):
-    alignment: list[TokenAlignment] = Field(
-        description="List of (original_token, translated_token) alignment tuples from tokens in original to translated. Tokens are space-delimited strings and should not be further split. A token can be aligned to multiple other tokens. A token can be unaligned, in the case of tokens with predominantly grammatical function, in which case do not align it. For disambiguation purposes, a token repeated multiple times will have a suffix appended to it so you must use it indicate the correct alignment."
-    )
-
-
-# Each token that is aligned should consist of only one string with no whitespace. In the case of multi-token phrases, align each token of the phrase to the same token separately.
-T = TypeVar("T")
-
-
-class IndexedTokens(list[T]):
-    def __format__(self, format_spec: str) -> str:
-        # Here we ensure that the tokens passed in for alignment are normalized and unique
-        actual_tokens = make_unique(normalize_tokens(self))
-        return f"{' '.join(actual_tokens)} ({len(actual_tokens)} tokens)"
-
-
-@magentic.prompt(
-    "Align the tokens in the original and translated waka:\n\n## Original\n{original}\n\n## Translation\n{translated}"
+from hachidaishu_translation.hachidaishu import HachidaishuDB
+from hachidaishu_translation.log import logger
+from hachidaishu_translation.models import (
+    IndexedTokens,
+    ModelCapability,
+    ModelConfig,
+    ModelType,
+    TranslationType,
+    align_tokens,
+    build_run_configuration,
+    check_alignment_strings,
+    get_magentic_model,
 )
-def align_tokens(
-    original: Annotated[
-        IndexedTokens[str], Field(description="List of original tokens")
-    ],
-    translated: Annotated[
-        IndexedTokens[str], Field(description="List of translated tokens")
-    ],
-) -> TokenAlignmentSchema: ...
-
-
-delimiter_regex = r"([\w ]+?/){4}[\w ]+"
-line_regex = r"[\w ]+"
-word_regex = r"([ぁ-ゟァ-ヿ一-鿿]{1,8}: [\w ]+\n)+"
-
-translation_matrix = {
-    "lines": {
-        "regex": {
-            "prompt": translate_lines,
-            "regex": line_regex,
-        },
-        "pydantic": {
-            "prompt": create_lines_translation,
-        },
-    },
-    # After experimentation, whole-line-based translation works best.
-    # "chunks": {
-    #     "regex": {
-    #         "prompt": translate_chunks,
-    #         "regex": delimiter_regex,
-    #     },
-    #     "pydantic": {
-    #         "prompt": create_chunks_translation,
-    #     },
-    # },
-    # "words": {
-    #     "regex": {
-    #         "prompt": translate_words,
-    #         "regex": word_regex,
-    #     },
-    #     "pydantic": {
-    #         "prompt": create_tokens_translation,
-    #     },
-    # },
-}
-
-
-def translate_regex(
-    model,  #: outlines.models.transformers.Transformers,
-    text: str,
-    prompt_template,
-    regex,
-):
-    prompt = prompt_template(text)
-    generator = generate.regex(model, regex)
-    answer = generator(prompt, max_tokens=100)
-    return answer
-
-
-def translate_pydantic(
-    _model,
-    text: str,
-    prompt_function,
-):
-    # with magentic.OpenaiChatModel(model, temperature=0, seed=42):
-    logger.debug(prompt_function.format(text))
-    answer = prompt_function(text)
-    logger.info(answer)
-    return answer.translated
-
-
-def run(tokens: list[str], original_token_ids: list[int], poem_id: int) -> list[dict]:
-    """Models are chosen based on the following criteria:
-    - Score on the [Nejumi LLM Leaderboard](https://wandb.ai/wandb-japan/llm-leaderboard/reports/Nejumi-leaderboard-Neo--Vmlldzo2MTkyMTU0)
-    - (Base) Models should be trained on distinct datasets
-    """
-    results = []
-    for model_name in [
-        # "microsoft/Phi-3-mini-4k-instruct",
-        # "CohereForAI/aya-23-8B", # Generates gibberish
-        # "augmxnt/shisa-gamma-7b-v1",
-        # "Qwen/Qwen1.5-7B-Chat",
-        # "TheBloke/Swallow-7B-Instruct-AWQ",
-        # "tokyotech-llm/Swallow-MS-7b-instruct-v0.1",
-        # "tokyotech-llm/Swallow-7b-instruct-v0.1",
-        # "mistralai/Mistral-7B-Instruct-v0.3",
-        # "meta-llama/Meta-Llama-3-8B-Instruct",
-        "4o-global",  # 2024-05-13
-    ]:
-        if model_name.count("/") == 1:
-            model_type = "regex"
-            model = get_hf_model(model_name)
-        else:
-            model_type = "pydantic"
-            model = model_name
-        for gen_type, instructions in tqdm(
-            translation_matrix.items(), position=0, desc="Parameters"
-        ):
-            logger.info(f"Running {model_name} {model_type} {gen_type}.")
-            if model_type == "regex":
-                translation = translate_regex(
-                    model,
-                    tokens,
-                    instructions[model_type]["prompt"],
-                    instructions[model_type]["regex"],
-                )
-            elif model_type == "pydantic":
-                translation = translate_pydantic(
-                    model,
-                    tokens,
-                    instructions[model_type]["prompt"],
-                )
-            else:
-                raise ValueError(f"Invalid model type {model_type}.")
-
-            # Result normalization:
-            translation = translation.strip(".").replace("\n", " ")
-
-            result = {
-                "model": model_name,
-                "method": model_type,
-                "gen_type": gen_type,
-                "translation": translation,
-            }
-            results.append(result)
-
-            translation_id = db.save_translation(
-                poem_id, model_name, model_type, gen_type, translation
-            )
-            result["translation_id"] = translation_id
-
-            translated_tokens = normalize_tokens(
-                [
-                    word
-                    for item in (
-                        translation if isinstance(translation, list) else [translation]
-                    )
-                    for word in (item if isinstance(item, list) else item.split())
-                ]
-            )
-            translated_token_ids = db.save_translation_tokens(
-                translation_id, translated_tokens
-            )
-            result["translated_tokens"] = translated_tokens
-            result["translated_token_ids"] = translated_token_ids
-
-            # alignment = align_tokens(
-            #     IndexedTokens(tokens), IndexedTokens(translated_tokens)
-            # )
-            # db.save_alignment(
-            #     translation_id,
-            #     alignment,
-            #     dict(zip(make_unique(tokens), original_token_ids)),
-            #     dict(zip(make_unique(translated_tokens), translated_token_ids)),
-            # )
-        # Free up GPU memory
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
-    return results
+from hachidaishu_translation.utils import retry
 
 
 def waka_to_translations(filename="kokindb.txt") -> dict[str, str]:
@@ -330,113 +61,557 @@ def waka_to_translations(filename="kokindb.txt") -> dict[str, str]:
     return mapping
 
 
-def random_sample(lines, n=5, random_seed=42):
+def random_sample(lines: list[Any], n: int = 5, random_seed: int = 42) -> list[Any]:
     random.seed(random_seed)
     return random.sample(lines, n)
 
 
-if __name__ == "__main__":
-    db.create_tables()
+def extract_and_filter_poems(
+    num_samples: int | None,
+    limit_to_golden_translations: bool = True,
+) -> tuple[dict[str, str], list[list[Any]]]:
+    """
+    Extracts and filters poems from the Hachidaishu database and matches them to golden translations.
 
+    Returns:
+    - A dictionary mapping original poems to their translations.
+    - A list of poems.
+    """
     translation_map = waka_to_translations()
     hachidaishu_db = HachidaishuDB()
+
     by_poem = groupby(
         hachidaishu_db.query(),
         key=lambda r: (r.anthology, r.poem),
     )
-    # eagerly load all poems
     poems = [list(poem) for _, poem in by_poem]
-    # poem_sample = [
-    #     poem
-    #     for poem in poems
-    #     if format_poem([r.token() for r in poem], delim="") in translation_map
-    # ]
-    poem_sample = random_sample(
-        [
+    logger.info(f"Extracted {len(poems)} poems.")
+
+    if limit_to_golden_translations:
+        poems = [
             poem
             for poem in poems
             if format_poem([r.token() for r in poem], delim="") in translation_map
-        ],
-        n=10,
+        ]
+        logger.info(f"Filtered poems to {len(poems)} with golden translations.")
+
+    if num_samples:
+        poems = random_sample(poems, n=num_samples)
+
+    return translation_map, poems
+
+
+# FIXME add type hints
+def process_poem(
+    poem: list[Any], translation_map: dict[str, str]
+) -> tuple[int, list[int], list[str], int, list[str], list[int], list[str]]:
+    tokens = [r.token() for r in poem]
+    original_tokens = format_poem(tokens, delim=" ", split=True)
+    original_chunks = original_tokens.split(" / ")
+    gold_translation = translation_map.get(format_poem(tokens, delim=""))
+
+    o_list = normalize_tokens(original_tokens.split())
+    gt_list = normalize_tokens(gold_translation.split())
+
+    o_list_unique = make_unique(o_list)
+    gt_list_unique = make_unique(gt_list)
+
+    logger.info(f"O\t\t{original_tokens}")
+    logger.info(f"GT\t\t{gold_translation}")
+    logger.debug(f"O\t\t{o_list_unique}")
+    logger.debug(f"GT\t\t{gt_list_unique})")
+
+    # Check if the poem already exists in the database
+    existing_poem = db.get_poem_by_text(original_tokens)
+    if existing_poem:
+        poem_id = existing_poem["poem_id"]
+        original_token_ids: list[int] = db.get_poem_token_ids(poem_id)
+    else:
+        poem_id = db.save_poem(original_tokens)
+        original_token_ids: list[int] = db.save_poem_tokens(
+            poem_id,
+            remove_unique(o_list_unique),  # Save the non-marked-up tokens
+        )
+
+    # Check if the gold translation already exists
+    existing_gold_translation = db.get_gold_translation(poem_id)
+    if existing_gold_translation:
+        gold_translation_id = existing_gold_translation["translation_id"]
+        gold_translation_token_ids = db.get_translation_token_ids(gold_translation_id)
+    else:
+        gold_translation_id = db.save_translation(
+            poem_id, "gold_standard", "manual", "gold", None, gold_translation
+        )
+        gold_translation_token_ids = list(
+            db.save_translation_tokens(
+                gold_translation_id,
+                gt_list,  # Save the non-marked-up tokens
+            )
+        )
+
+    return (
+        poem_id,
+        original_token_ids,
+        o_list_unique,
+        gold_translation_id,
+        gt_list_unique,
+        gold_translation_token_ids,
+        original_chunks,
     )
 
-    for poem in poem_sample:
-        # tokens = list(db.tokens(anthology=Anthology.Kokinshu, poem=32))
-        tokens = [r.token() for r in poem]
-        original_tokens = format_poem(tokens, delim=" ", split=True)
-        gold_translation = translation_map[format_poem(tokens, delim="")]
 
-        o_list = normalize_tokens(original_tokens.split())
-        gt_list = normalize_tokens(gold_translation.split())
-
-        o_list_unique = make_unique(o_list)
-        gt_list_unique = make_unique(gt_list)
-
-        logger.info(f"O\t\t{original_tokens}")
-        logger.info(f"GT\t\t{gold_translation}")
-        logger.info(f"O\t\t{o_list_unique}")
-        logger.info(f"GT\t\t{gt_list_unique})")
-
-        poem_id = db.save_poem(original_tokens)
-        original_token_ids = db.save_poem_tokens(poem_id, remove_unique(o_list_unique))
-
-        gold_translation_id = db.save_translation(
-            poem_id, "gold_standard", "manual", "gold", gold_translation
+def run_contamination_check(
+    models: list[str], poems: list[list[Any]], batch_size: int
+) -> None:
+    for model_name in models:
+        model = ModelConfig(model_name)
+        formatted_poems = list(
+            format_poem([r.token() for r in poem], delim="", split=True).split(" / ")
+            for poem in poems
         )
-        gold_translation_token_ids = db.save_translation_tokens(
-            gold_translation_id, remove_unique(gt_list_unique)
+        logger.info(f"Poems: {formatted_poems}")
+        total_batches = (sum(1 for _ in formatted_poems) + batch_size - 1) // batch_size
+        results = []
+        with tqdm(
+            total=total_batches, desc=f"Processing {model_name}", unit="batch"
+        ) as pbar:
+            for i in range(0, total_batches):
+                batch = list(
+                    islice(formatted_poems, i * batch_size, (i + 1) * batch_size)
+                )
+                batch_results = model.contamination_check(batch, batch_size=batch_size)
+                results.extend(batch_results)
+                pbar.update(1)
+        logger.info(f"Model: {model_name}, Contamination Check: {results}")
+
+
+def contains_japanese(text: str | None) -> bool:
+    if not isinstance(text, str):
+        return False
+    return bool(re.search(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]", text))
+
+
+def is_too_short(text: str | None) -> bool:
+    if not isinstance(text, str):
+        return False
+    return re.sub(r"\s+", " ", re.sub(r"[^a-zA-Z\s]", "", text)).count(" ") < 12
+
+
+def save_translations_and_alignments(
+    poem_id: int,
+    model_name: str,
+    model_type: ModelType,
+    capability: ModelCapability,
+    run_type: TranslationType,
+    translation: str,
+    original_tokens: list[str],
+    original_token_ids: list[int],
+    alignments: list[tuple[str, str]] | None,
+    temperature: float,
+) -> None:
+    translation_id = db.save_translation(
+        poem_id,
+        model_name,
+        model_type.name + "-" + capability.value,
+        run_type.value,
+        temperature,
+        translation,
+    )
+
+    original_tokens = remove_unique(original_tokens)
+
+    if alignments:
+        logger.info(f"Saving translation tokens with alignments for {translation}")
+        translated_tokens = [token for _, token in alignments]
+
+        translated_token_ids = db.save_translation_tokens(
+            translation_id, translated_tokens
         )
 
-        def visualize_and_save_alignment():
-            alignment = align_tokens(IndexedTokens(o_list), IndexedTokens(gt_list))
-            alignment_visualization = visualize_alignment(
-                o_list_unique,
-                gt_list_unique,
-                alignment,
+        alignments = check_alignment_strings(
+            original_tokens, translated_tokens, alignments
+        )
+        if not alignments:
+            logger.error(
+                f"Failed to align translation tokens for {translation}. Skipping."
             )
-            logger.info("\n" + alignment_visualization.get_string())
-            db.save_alignment(
-                gold_translation_id,
-                alignment,
-                dict(zip(o_list_unique, original_token_ids)),
-                dict(zip(gt_list_unique, gold_translation_token_ids)),
+            return
+
+        run_id = str(uuid.uuid4())
+        db.save_alignment_direct(
+            translation_id,
+            alignments,
+            original_token_ids,
+            translated_token_ids,
+            alignment_model=model_name,
+            temperature=temperature,
+            run_id=run_id,
+        )
+    else:
+        logger.info(
+            f"Not saving alignments as not present for: {translation}. Needs to be separately aligned."
+        )
+
+
+def retry_translation(
+    model_config: ModelConfig,
+    original_inputs: list[list[str]] | list[str],
+    capability: ModelCapability,
+    run_type: TranslationType,
+    batch_size: int,
+    max_retries: int = 3,
+) -> list[tuple[str | None, list[tuple[str, str]] | None]]:
+    translations_with_alignments = model_config.translate(
+        original_inputs,
+        chosen_capability=capability,
+        chosen_type=run_type,
+        batch_size=batch_size,
+    )
+
+    logger.warning(f"Translations with alignments: {translations_with_alignments}")
+    for i, (translation, _alignment) in enumerate(translations_with_alignments):
+        if isinstance(translation, ValueError):
+            logger.error(
+                f"Cannot retry for ValueError in {translation}. Setting to None."
             )
+            translations_with_alignments[i] = (None, None)
+            continue
+        # elif isinstance(translation, str) and alignment is not None:
+        #     continue
+        if translation:
+            translation = clean_bad_translation(translation)
 
-        retry(visualize_and_save_alignment)
+        current_translation = translation
+        temperature = model_config.temperature
 
-        translations = run(o_list_unique, original_token_ids, poem_id)
-        for translation in translations:
-            logger.info(
-                f"{translation['model']} {translation['gen_type']}\t{translation['translation']}"
-            )
-
-            if len(translation["translated_tokens"]) < 12:
+        not_translation = not translation
+        too_short = is_too_short(translation)
+        contains_ja = contains_japanese(translation)
+        logger.info(
+            f"current_translation: {current_translation}, not_translation: {not_translation}, too_short: {too_short}--{is_too_short(translation) if translation else 'NA'}, contains_ja: {contains_ja}--{contains_japanese(translation) if translation else 'NA'}"
+        )
+        if not_translation or too_short or contains_ja:
+            for attempt in range(max_retries):
+                temperature += 0.1
+                model_config.sampler = outlines.samplers.MultinomialSampler(
+                    temperature=temperature
+                )
                 logger.warning(
-                    f"Skipping short translation {translation['translation']}."
+                    f"Translation rejected (not_translation={not_translation}, too_short={too_short}, contains_japanese={contains_ja}). Retrying translation '{current_translation}' with increased temperature: {temperature} (attempt {attempt + 1}/{max_retries})"
                 )
-                continue
+                new_translation_with_alignments_batch = model_config.translate(
+                    [original_inputs[i]],
+                    chosen_capability=capability,
+                    chosen_type=run_type,
+                    batch_size=1,
+                )
+                if not new_translation_with_alignments_batch:
+                    logger.error(
+                        f"Translation batch invalid: {new_translation_with_alignments_batch}"
+                    )
+                    continue
 
-            def visualize_and_save_translation_alignment():
-                alignment = align_tokens(
-                    IndexedTokens(o_list),
-                    IndexedTokens(translation["translated_tokens"]),
+                new_translation_with_alignments = new_translation_with_alignments_batch[
+                    0
+                ]
+                new_translation = new_translation_with_alignments[0]
+                current_translation = new_translation
+
+                not_translation = not new_translation
+                too_short = is_too_short(new_translation)
+                contains_ja = contains_japanese(new_translation)
+                if not not_translation and not too_short and not contains_ja:
+                    translations_with_alignments[i] = new_translation_with_alignments
+                    break
+            else:
+                logger.error(
+                    f"Max retries reached for translation {i}. Setting to None."
                 )
-                alignment_visualization = visualize_alignment(
-                    o_list_unique,
-                    make_unique(normalize_tokens(translation["translated_tokens"])),
-                    alignment,
+                model_config.sampler = model_config.default_sampler
+                translations_with_alignments[i] = (None, None)
+
+    return translations_with_alignments
+
+
+def main(
+    models: list[str],
+    run_types: list[TranslationType],
+    num_samples: int,
+    align_mode: bool = False,
+    temperature: float = 0.0,
+    align_model_name: str | None = None,
+    preferred_generation_methods: list[ModelCapability] = [
+        ModelCapability.PYDANTIC,
+        ModelCapability.REGEX,
+    ],
+    contamination_check: bool = False,
+    batch_size: int = 1,
+    dtype: str = "bfloat16",
+    strict_alignment: bool = True,
+    database: str = "translations.db",
+    merge_databases: bool = False,
+):
+    db.create_tables(database, merge_databases)
+
+    if contamination_check:
+        translation_map, poems = extract_and_filter_poems(num_samples)
+        return run_contamination_check(models, poems, batch_size)
+
+    if align_mode:
+        for poem_id in set(
+            [row[0] for row in db.query().fetchall()]
+        ):  # Get unique poem_ids
+            unaligned_translations = db.get_unaligned_translations(
+                poem_id,
+                alignment_model=align_model_name,
+                temperature=temperature,
+                strict=strict_alignment,
+            )
+            for translation in unaligned_translations:
+                translation_id = translation["translation_id"]
+
+                # Check if this is a word-based translation and skip it if it is
+                translation_info = db.get_translation_info(translation_id)
+                if translation_info["gen_type"] == TranslationType.WORDS.value:
+                    logger.info(
+                        f"Skipping alignment for word-based translation (translation_id: {translation_id})"
+                    )
+                    continue
+
+                tokens_data = db.get_tokens(poem_id, translation_id)
+                original_tokens = [
+                    token for _idx, token in tokens_data["original_tokens"]
+                ]
+                translated_tokens = [
+                    token for _idx, token in tokens_data["translated_tokens"]
+                ]
+
+                # Save alignments on existing translations
+                align_and_save(
+                    source_tokens_unique=make_unique(original_tokens),
+                    target_tokens_unique=make_unique(translated_tokens),
+                    translation_id=translation_id,
+                    poem_id=poem_id,
+                    align_model_name=align_model_name,
+                    temperature=temperature,
                 )
-                logger.info("\n" + alignment_visualization.get_string())
-                db.save_alignment(
-                    translation["translation_id"],
-                    alignment,
-                    dict(zip(o_list_unique, original_token_ids)),
-                    dict(
-                        zip(
-                            make_unique(translation["translated_tokens"]),
-                            translation["translated_token_ids"],
+        return  # Exit after finishing alignments in align_mode
+
+    translation_map, poems = extract_and_filter_poems(num_samples)
+    run_configuration = build_run_configuration(
+        models,
+        run_types,
+        preferred_generation_methods=preferred_generation_methods,
+        temperature=temperature,
+        dtype=dtype,
+    )
+    logger.debug(run_configuration)
+    for model_name, model_config in run_configuration.items():
+        model_type = model_config.model_type
+        try:
+            for capability in model_config.prompts.keys():
+                for run_type in model_config.prompts[capability].keys():
+                    # Translation logic
+                    for i in range(0, len(poems), batch_size):
+                        batch_poems = poems[i : i + batch_size]
+                        processed_poems = [
+                            process_poem(poem, translation_map) for poem in batch_poems
+                        ]
+
+                        # Subscripts such as ₂ may not be in model vocabulary preventing regex generation from working so use the original chunks or tokens (?)
+                        # But in any case, we should remove them at this step as not all methods require them.
+                        original_inputs = [
+                            original_chunks
+                            if run_type == TranslationType.CHUNKS
+                            else remove_unique(o_list_unique)
+                            for (
+                                _poem_id,
+                                _original_token_ids,
+                                o_list_unique,
+                                _gold_translation_id,
+                                _gt_list_unique,
+                                _gold_translation_token_ids,
+                                original_chunks,
+                            ) in processed_poems
+                        ]
+
+                        translations_with_alignments: list[
+                            tuple[str | None, list[tuple[str, str]] | None]
+                        ] = retry_translation(
+                            model_config,
+                            original_inputs,
+                            capability,
+                            run_type,
+                            batch_size,
                         )
-                    ),
-                )
 
-            retry(visualize_and_save_translation_alignment)
+                        # We filter out failed translations so we do not save or have to align them.
+                        valid_translations = [
+                            (poem, (translation, alignment))
+                            for poem, (translation, alignment) in zip(
+                                processed_poems, translations_with_alignments
+                            )
+                            if translation is not None
+                        ]
+
+                        # Now we save the translations and alignments (if available)
+                        # Gold alignments are only saved in align mode, so we skip them here.
+                        for (
+                            poem_id,
+                            original_token_ids,
+                            o_list_unique,
+                            _gold_translation_id,
+                            _gt_list_unique,
+                            _gold_translation_token_ids,
+                            _original_chunks,
+                        ), (translation, alignment) in valid_translations:
+                            save_translations_and_alignments(
+                                poem_id,
+                                model_name,
+                                model_type,
+                                capability,
+                                run_type,
+                                translation,
+                                o_list_unique,
+                                original_token_ids,
+                                alignment,
+                                model_config.temperature,
+                            )
+
+        finally:
+            logger.info(f"Releasing {model_name} resources...")
+            model_config.gc()
+
+
+def align_and_save(
+    source_tokens_unique: list[str],
+    target_tokens_unique: list[str],
+    translation_id: int,
+    poem_id: int,
+    align_model_name: str,
+    temperature: float,
+):
+    def visualize_and_save_alignment():
+        with get_magentic_model(align_model_name, temperature=temperature):
+            alignment = align_tokens(
+                IndexedTokens(source_tokens_unique),
+                IndexedTokens(target_tokens_unique),
+            )
+        alignment_visualization = visualize_alignment(
+            source_tokens_unique,
+            target_tokens_unique,
+            alignment,
+        )
+        logger.info("\n" + alignment_visualization.get_string())
+
+        tokens = db.get_tokens(poem_id, translation_id)
+        run_id = str(uuid.uuid4())
+        db.save_alignment(
+            translation_id,
+            alignment,
+            tokens["original_tokens"],
+            tokens["translated_tokens"],
+            alignment_model=align_model_name,
+            temperature=temperature,
+            run_id=run_id,
+        )
+
+    retry(visualize_and_save_alignment)
+
+
+if __name__ == "__main__":
+    from statistics import median
+
+    from hachidaishu_translation.format import normalize_tokens
+
+    translation_map, poems = extract_and_filter_poems(None, False)
+
+    original_word_counts = []
+    golden_word_counts = []
+    total_poems = len(poems)
+    matched_poems = 0
+
+    for poem in poems:
+        original_tokens = normalize_tokens(
+            format_poem([r.token() for r in poem], delim=" ", split=True).split()
+        )
+        if len(original_tokens) < 8:
+            logger.error(original_tokens)
+        original_word_counts.append(len(original_tokens))
+
+        gold_translation = translation_map.get(
+            format_poem([r.token() for r in poem], delim="")
+        )
+        if gold_translation:
+            matched_poems += 1
+            golden_tokens = normalize_tokens(gold_translation.split())
+            golden_word_counts.append(len(golden_tokens))
+
+    print(f"Total number of poems: {total_poems}")
+    print(f"Poems matched to golden translation: {matched_poems}")
+    print(f"Poems without golden translation: {total_poems - matched_poems}")
+
+    print("\nOriginal poem statistics:")
+    print(f"Min word count: {min(original_word_counts)}")
+    print(f"Max word count: {max(original_word_counts)}")
+    print(f"Median word count: {median(original_word_counts)}")
+
+    if golden_word_counts:
+        print("\nGolden translation statistics:")
+        print(f"Min word count: {min(golden_word_counts)}")
+        print(f"Max word count: {max(golden_word_counts)}")
+        print(f"Median word count: {median(golden_word_counts)}")
+    else:
+        print("\nNo golden translations available.")
+
+    # Print min-max length of all chunks
+    chunks = [
+        chunk
+        for poem in poems
+        for chunk in format_poem(
+            [r.token() for r in poem], delim=" ", split=True
+        ).split(" / ")
+    ]
+    chunk_lengths = [len(chunk) for chunk in chunks]
+    print("\nChunk length statistics:")
+    print(f"Min chunk length: {min(chunk_lengths)}")
+    print(f"Max chunk length: {max(chunk_lengths)}")
+
+    # Print 5 shortest and 5 longest chunks
+    sorted_chunks = sorted(zip(chunks, chunk_lengths), key=lambda x: x[1])
+    print("\n5 shortest chunks:")
+    for chunk, length in sorted_chunks[:5]:
+        print(f"Length {length}: {chunk}")
+    print("\n5 longest chunks:")
+    for chunk, length in sorted_chunks[-5:]:
+        print(f"Length {length}: {chunk}")
+
+    # Log a warning for any chunk with 0 characters
+    for i, (chunk, length) in enumerate(zip(chunks, chunk_lengths)):
+        if length == 0:
+            poem_index = next(
+                j
+                for j, poem in enumerate(poems)
+                if chunk
+                in format_poem([r.token() for r in poem], delim=" ", split=True).split(
+                    " / "
+                )
+            )
+            full_poem = format_poem(
+                [r.token() for r in poems[poem_index]], delim=" ", split=True
+            )
+            logger.warning(
+                f"Found a chunk with 0 characters. Poem index: {poem_index}, Full poem: {full_poem}"
+            )
+
+    # Calculate and print statistics for the last chunk of each poem
+    last_chunks = [
+        format_poem([r.token() for r in poem], delim=" ", split=True).split(" / ")[-1]
+        for poem in poems
+    ]
+    last_chunk_lengths = [len(chunk) for chunk in last_chunks]
+
+    print("\nLast chunk statistics:")
+    print(f"Min last chunk length: {min(last_chunk_lengths)}")
+    print(f"Max last chunk length: {max(last_chunk_lengths)}")
+    print(f"Median last chunk length: {median(last_chunk_lengths)}")

@@ -1,4 +1,5 @@
 import time
+
 from hachidaishu_translation.log import logger
 
 
