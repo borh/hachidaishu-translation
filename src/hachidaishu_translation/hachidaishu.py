@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import re
-import unicodedata
 from collections import Counter
 from dataclasses import asdict, astuple, dataclass, field, fields
 from enum import Enum
@@ -222,16 +221,6 @@ class HachidaishuDB:
             del records[begin_variant[0] : begin_variant[0] + 2 + variant_count]
             del records[begin_original[0]]
 
-        # Remove now empty records
-        # assert [
-        #     record
-        #     for record in records
-        #     if any(segment.tokens for segment in record.segments)
-        # ] == [
-        #     record
-        #     for record in records
-        #     if all(segment.tokens for segment in record.segments)
-        # ]
         records[:] = [
             record
             for record in records
@@ -243,8 +232,9 @@ class HachidaishuDB:
         # 1. when appearing the first time, the starting position of tokens that have a variant (up to the end of the chunk)
         # 2. when appearing the second time in a poem, it is followed by the variant (to be replace with the variant)
         # For our purposes, we will combine the variants into the same decomposition segment (?? or ignore them).
-        poem_id = records[variant_indices[0][0]].poem
-        anthology = records[variant_indices[0][0]].anthology
+
+        # poem_id = records[variant_indices[0][0]].poem
+        # anthology = records[variant_indices[0][0]].anthology
 
         for k in range(len(variant_indices) - 3, -1, -3):
             begin_original, begin_variant, end_variant = variant_indices[k : k + 3]
@@ -266,7 +256,7 @@ class HachidaishuDB:
             #         f"Parsed variant count: {parsed_variant_count} != Counted variant count: {variant_count}"
             #     )
 
-            original_start_index = begin_original[0] + 1
+            _original_start_index = begin_original[0] + 1
             # logger.info(
             #     f"Original: {records[original_start_index:original_start_index+variant_count]}"
             # )
