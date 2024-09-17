@@ -38,6 +38,11 @@ uv pip install torch --index-url https://download.pytorch.org/whl/rocm6.1
 # Or a later version
 ```
 
+## API use
+
+In order to use the various APIs, you must set the correct environment variables.
+This project uses [devenv](https://devenv.sh/) to manage them, but you will need to adapt it to your own workflow.
+
 # Usage
 
 The main entrypoint to the program is `src/hachidaishu_translation/cli.py`, but it is possible to specify a run configuration file like so:
