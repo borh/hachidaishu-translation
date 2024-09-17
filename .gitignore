@@ -170,3 +170,5 @@ devenv.local.nix
 
 # Translations are under copyright
 kokindb.txt
+run_*json
+*.db*
